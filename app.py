@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import importlib.util
 
 ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
@@ -31,38 +32,35 @@ except ModuleNotFoundError:
         st.info("v6.0 - Sprint 4: interface em migração para os serviços modulares.")
 
 
+
+def _load_module_from_file(module_name: str, relative_path: str):
+    try:
+        module_path = ROOT_DIR / relative_path
+        if not module_path.exists():
+            return None
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
 def _safe_import_ui():
     availability = {}
-    try:
-        from ui.import_tab import render_import_tab as _render_import_tab_v6
-        availability["import"] = _render_import_tab_v6
-    except Exception:
-        availability["import"] = None
-    try:
-        from ui.edit_tab import render_edit_tab as _render_edit_tab_v6
-        availability["edit"] = _render_edit_tab_v6
-    except Exception:
-        availability["edit"] = None
-    try:
-        from ui.summary_tab import render_summary_tab as _render_summary_tab_v6
-        availability["summary"] = _render_summary_tab_v6
-    except Exception:
-        availability["summary"] = None
-    try:
-        from ui.export_tab import render_export_tab as _render_export_tab_v6
-        availability["export"] = _render_export_tab_v6
-    except Exception:
-        availability["export"] = None
-    try:
-        from ui.conrestcon_tab import render_conrestcon_tab as _render_conrestcon_tab_v6
-        availability["conrestcon"] = _render_conrestcon_tab_v6
-    except Exception:
-        availability["conrestcon"] = None
-    try:
-        from ui.homologation_tab import render_homologation_tab as _render_homologation_tab_v6
-        availability["homologation"] = _render_homologation_tab_v6
-    except Exception:
-        availability["homologation"] = None
+    module_map = {
+        "import": ("ui_import_tab_v6", "ui/import_tab.py", "render_import_tab"),
+        "edit": ("ui_edit_tab_v6", "ui/edit_tab.py", "render_edit_tab"),
+        "summary": ("ui_summary_tab_v6", "ui/summary_tab.py", "render_summary_tab"),
+        "export": ("ui_export_tab_v6", "ui/export_tab.py", "render_export_tab"),
+        "conrestcon": ("ui_conrestcon_tab_v6", "ui/conrestcon_tab.py", "render_conrestcon_tab"),
+        "homologation": ("ui_homologation_tab_v6", "ui/homologation_tab.py", "render_homologation_tab"),
+    }
+    for key, (module_name, rel_path, fn_name) in module_map.items():
+        mod = _load_module_from_file(module_name, rel_path)
+        availability[key] = getattr(mod, fn_name, None) if mod else None
     return availability
 
 _ui_v6 = _safe_import_ui()
@@ -2086,8 +2084,16 @@ render_sprint_banner()
 
 modo_modular_v6 = st.toggle("Usar interface modular da v6.0 (Sprint 8)", value=True)
 
+
 with st.expander("Diagnóstico rápido da interface modular", expanded=False):
     st.write({
+        "root_dir": str(ROOT_DIR),
+        "ui_import_tab.py": (ROOT_DIR / "ui" / "import_tab.py").exists(),
+        "ui_edit_tab.py": (ROOT_DIR / "ui" / "edit_tab.py").exists(),
+        "ui_summary_tab.py": (ROOT_DIR / "ui" / "summary_tab.py").exists(),
+        "ui_export_tab.py": (ROOT_DIR / "ui" / "export_tab.py").exists(),
+        "ui_conrestcon_tab.py": (ROOT_DIR / "ui" / "conrestcon_tab.py").exists(),
+        "ui_homologation_tab.py": (ROOT_DIR / "ui" / "homologation_tab.py").exists(),
         "import": render_import_tab_v6 is not None,
         "edit": render_edit_tab_v6 is not None,
         "summary": render_summary_tab_v6 is not None,

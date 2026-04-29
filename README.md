@@ -323,3 +323,7 @@ streamlit run app.py
 - imports do modo modular tornados independentes por aba;
 - exibição dinâmica das abas disponíveis;
 - inclusão de diagnóstico rápido da interface modular.
+
+
+## Ajuste da v6.0 Sprint 8.3
+- carregamento dos módulos da interface modular por caminho de arquivo (`importlib.util.spec_from_file_location`), evitando dependência do import tradicional por pacote no ambiente do Streamlit.
