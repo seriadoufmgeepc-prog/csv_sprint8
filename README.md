@@ -317,3 +317,9 @@ streamlit run app.py
 
 ## Ajuste da v6.0 Sprint 8.1
 - integração explícita da aba Homologação ao `app.py` no modo modular.
+
+
+## Ajuste da v6.0 Sprint 8.2
+- imports do modo modular tornados independentes por aba;
+- exibição dinâmica das abas disponíveis;
+- inclusão de diagnóstico rápido da interface modular.

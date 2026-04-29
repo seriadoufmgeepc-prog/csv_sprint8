@@ -30,20 +30,48 @@ except ModuleNotFoundError:
     def render_sprint_banner():
         st.info("v6.0 - Sprint 4: interface em migração para os serviços modulares.")
 
-try:
-    from ui.import_tab import render_import_tab as render_import_tab_v6
-    from ui.edit_tab import render_edit_tab as render_edit_tab_v6
-    from ui.summary_tab import render_summary_tab as render_summary_tab_v6
-    from ui.export_tab import render_export_tab as render_export_tab_v6
-    from ui.conrestcon_tab import render_conrestcon_tab as render_conrestcon_tab_v6
-    from ui.homologation_tab import render_homologation_tab as render_homologation_tab_v6
-except ModuleNotFoundError:
-    render_import_tab_v6 = None
-    render_edit_tab_v6 = None
-    render_summary_tab_v6 = None
-    render_export_tab_v6 = None
-    render_conrestcon_tab_v6 = None
-    render_homologation_tab_v6 = None
+
+def _safe_import_ui():
+    availability = {}
+    try:
+        from ui.import_tab import render_import_tab as _render_import_tab_v6
+        availability["import"] = _render_import_tab_v6
+    except Exception:
+        availability["import"] = None
+    try:
+        from ui.edit_tab import render_edit_tab as _render_edit_tab_v6
+        availability["edit"] = _render_edit_tab_v6
+    except Exception:
+        availability["edit"] = None
+    try:
+        from ui.summary_tab import render_summary_tab as _render_summary_tab_v6
+        availability["summary"] = _render_summary_tab_v6
+    except Exception:
+        availability["summary"] = None
+    try:
+        from ui.export_tab import render_export_tab as _render_export_tab_v6
+        availability["export"] = _render_export_tab_v6
+    except Exception:
+        availability["export"] = None
+    try:
+        from ui.conrestcon_tab import render_conrestcon_tab as _render_conrestcon_tab_v6
+        availability["conrestcon"] = _render_conrestcon_tab_v6
+    except Exception:
+        availability["conrestcon"] = None
+    try:
+        from ui.homologation_tab import render_homologation_tab as _render_homologation_tab_v6
+        availability["homologation"] = _render_homologation_tab_v6
+    except Exception:
+        availability["homologation"] = None
+    return availability
+
+_ui_v6 = _safe_import_ui()
+render_import_tab_v6 = _ui_v6.get("import")
+render_edit_tab_v6 = _ui_v6.get("edit")
+render_summary_tab_v6 = _ui_v6.get("summary")
+render_export_tab_v6 = _ui_v6.get("export")
+render_conrestcon_tab_v6 = _ui_v6.get("conrestcon")
+render_homologation_tab_v6 = _ui_v6.get("homologation")
 
 from pypdf import PdfReader
 
@@ -2058,22 +2086,40 @@ render_sprint_banner()
 
 modo_modular_v6 = st.toggle("Usar interface modular da v6.0 (Sprint 8)", value=True)
 
+with st.expander("Diagnóstico rápido da interface modular", expanded=False):
+    st.write({
+        "import": render_import_tab_v6 is not None,
+        "edit": render_edit_tab_v6 is not None,
+        "summary": render_summary_tab_v6 is not None,
+        "export": render_export_tab_v6 is not None,
+        "conrestcon": render_conrestcon_tab_v6 is not None,
+        "homologation": render_homologation_tab_v6 is not None,
+    })
 
-if modo_modular_v6 and all([render_import_tab_v6, render_edit_tab_v6, render_summary_tab_v6, render_export_tab_v6, render_conrestcon_tab_v6, render_homologation_tab_v6]):
-    tabs = st.tabs(["📥 Importação", "🛠️ Conferência e Edição", "📊 Resumo por UG", "📤 Exportação", "📚 CONRESTCON", "✅ Homologação"])
-    with tabs[0]:
-        render_import_tab_v6()
-    with tabs[1]:
-        render_edit_tab_v6()
-    with tabs[2]:
-        render_summary_tab_v6()
-    with tabs[3]:
-        render_export_tab_v6()
-    with tabs[4]:
-        render_conrestcon_tab_v6()
-    with tabs[5]:
-        render_homologation_tab_v6()
-    st.stop()
+
+if modo_modular_v6:
+    modular_tabs = []
+    if render_import_tab_v6:
+        modular_tabs.append(("📥 Importação", render_import_tab_v6))
+    if render_edit_tab_v6:
+        modular_tabs.append(("🛠️ Conferência e Edição", render_edit_tab_v6))
+    if render_summary_tab_v6:
+        modular_tabs.append(("📊 Resumo por UG", render_summary_tab_v6))
+    if render_export_tab_v6:
+        modular_tabs.append(("📤 Exportação", render_export_tab_v6))
+    if render_conrestcon_tab_v6:
+        modular_tabs.append(("📚 CONRESTCON", render_conrestcon_tab_v6))
+    if render_homologation_tab_v6:
+        modular_tabs.append(("✅ Homologação", render_homologation_tab_v6))
+
+    if modular_tabs:
+        if len(modular_tabs) < 6:
+            st.warning("Nem todos os módulos da interface v6.0 foram carregados. As abas disponíveis foram exibidas.")
+        tabs = st.tabs([name for name, _fn in modular_tabs])
+        for tab, (_name, fn) in zip(tabs, modular_tabs):
+            with tab:
+                fn()
+        st.stop()
 
 tabs = st.tabs(["📥 Importação", "🛠️ Conferência e Edição", "📊 Resumo por UG", "📤 Exportação", "📚 CONRESTCON"])
 
