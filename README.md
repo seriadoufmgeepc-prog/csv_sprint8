@@ -313,3 +313,7 @@ streamlit run app.py
 
 ## v6.0 - Sprint 8
 - execução da homologação funcional iniciada com registro estruturado de resultados e modelo de relatório final.
+
+
+## Ajuste da v6.0 Sprint 8.1
+- integração explícita da aba Homologação ao `app.py` no modo modular.

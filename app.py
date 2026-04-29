@@ -2056,11 +2056,11 @@ permitir_alerta_campos_vazios = st.sidebar.checkbox("Alertar motivo/providência
 
 render_sprint_banner()
 
-modo_modular_v6 = st.toggle("Usar interface modular da v6.0 (Sprint 6)", value=True)
+modo_modular_v6 = st.toggle("Usar interface modular da v6.0 (Sprint 8)", value=True)
 
 
-if modo_modular_v6 and all([render_import_tab_v6, render_edit_tab_v6, render_summary_tab_v6, render_export_tab_v6, render_conrestcon_tab_v6]):
-    tabs = st.tabs(["📥 Importação", "🛠️ Conferência e Edição", "📊 Resumo por UG", "📤 Exportação", "📚 CONRESTCON"])
+if modo_modular_v6 and all([render_import_tab_v6, render_edit_tab_v6, render_summary_tab_v6, render_export_tab_v6, render_conrestcon_tab_v6, render_homologation_tab_v6]):
+    tabs = st.tabs(["📥 Importação", "🛠️ Conferência e Edição", "📊 Resumo por UG", "📤 Exportação", "📚 CONRESTCON", "✅ Homologação"])
     with tabs[0]:
         render_import_tab_v6()
     with tabs[1]:
@@ -2071,6 +2071,8 @@ if modo_modular_v6 and all([render_import_tab_v6, render_edit_tab_v6, render_sum
         render_export_tab_v6()
     with tabs[4]:
         render_conrestcon_tab_v6()
+    with tabs[5]:
+        render_homologation_tab_v6()
     st.stop()
 
 tabs = st.tabs(["📥 Importação", "🛠️ Conferência e Edição", "📊 Resumo por UG", "📤 Exportação", "📚 CONRESTCON"])
