@@ -336,7 +336,3 @@ streamlit run app.py
 
 ## Ajuste da v6.0 Sprint 8.6
 - exibição forçada da Homologação no modo modular, abaixo das abas disponíveis, sem depender da aba dinâmica.
-
-
-## v6.0 - Sprint 9.1
-- Sprint 9 consolidada no app principal, com validação reforçada e carga opcional de base homologada de UGs.

@@ -28,7 +28,7 @@ try:
     from ui.components import render_sprint_banner
 except ModuleNotFoundError:
     def render_sprint_banner():
-        st.success("v6.0 - Sprint 9: validação reforçada para restrições inválidas e UGs não homologadas.")
+        st.info("v6.0 - Sprint 4: interface em migração para os serviços modulares.")
 
 
 def _safe_import_ui():
@@ -1703,8 +1703,8 @@ def validate_rows(
     if not rows:
         errors.append("Nenhuma linha de detalhe foi gerada.")
         return errors, warnings
-
     seen = {}
+
     if valid_ugs is not None and len(valid_ugs) == 0:
         warnings.append("Nenhuma base homologada de UGs foi carregada. A validação de UGs não homologadas não será aplicada.")
 
@@ -1712,13 +1712,12 @@ def validate_rows(
         ug = str(row.ug).zfill(6) if row.ug else ""
         restr = str(row.restricao).zfill(3) if row.restricao else ""
 
-        if not re.fullmatch(r"\d{6}", row.ug):
+        if not re.fullmatch(r"\d{6}", row.ug or ""):
             errors.append(f"Linha {idx}: UG inválida ({row.ug}).")
-        if not re.fullmatch(r"\d{3}", row.restricao):
+        if not re.fullmatch(r"\d{3}", row.restricao or ""):
             errors.append(f"Linha {idx}: código de restrição inválido ({row.restricao}).")
         elif restr not in CONRESTCON_MOTIVOS:
             errors.append(f"Linha {idx}: código de restrição inexistente na CONRESTCON ({row.restricao}).")
-
         if valid_ugs is not None and len(valid_ugs) > 0 and ug and ug not in valid_ugs:
             errors.append(f"Linha {idx}: UG não homologada na base oficial de validação ({row.ug}).")
 
@@ -1736,9 +1735,1180 @@ def validate_rows(
         if not row.providencia:
             warnings.append(f"Linha {idx}: providência está vazia.")
 
-    if bloquear_duplicidades:
-        for key, count in seen.items():
-            if count > 1:
-                errors.append(f"Duplicidade UG + Restrição identificada: UG {key[0]} / Restrição {key[1]}.")
-
+    duplicates = [f"UG {ug} + restrição {restr}" for (ug, restr), count in seen.items() if count > 1]
+    if duplicates:
+        msg = "Foram identificadas duplicidades de UG + restrição: " + "; ".join(duplicates[:20])
+        if bloquear_duplicidades:
+            errors.append(msg)
+        else:
+            warnings.append(msg)
     return errors, warnings
+
+def build_csv_content(nivel: str, codigo_responsavel: str, mes: int, rows: List[RestrictionRow]) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";", quotechar='"', quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
+    writer.writerow(["H", nivel, codigo_responsavel, mes, " ", " ", "|"])
+    for row in rows:
+        writer.writerow(["D", row.ug, row.restricao, row.motivo, row.providencia, row.valor, "|"])
+    writer.writerow(["T", len(rows), "", "", "", "", "|"])
+    return output.getvalue()
+
+
+
+
+
+
+def summarize_by_restriction(rows: List[RestrictionRow]) -> pd.DataFrame:
+    df = rows_to_dataframe(rows)
+    if df.empty:
+        return pd.DataFrame(columns=["Restrição", "Quantidade"])
+    out = (
+        df.groupby("Restrição", dropna=False)
+        .agg(Quantidade=("UG", "count"))
+        .reset_index()
+        .sort_values(["Quantidade", "Restrição"], ascending=[False, True])
+    )
+    out["Restrição"] = out["Restrição"].astype(str).apply(
+        lambda code: f"{str(code).zfill(3)} - {CONRESTCON_MOTIVOS.get(str(code).zfill(3), '')}".rstrip(" -")
+    )
+    return out
+
+
+def rows_to_summary(rows: List[RestrictionRow], all_ugs_df: pd.DataFrame) -> pd.DataFrame:
+    df_rows = rows_to_dataframe(rows)
+    grouped = {}
+    if not df_rows.empty:
+        for ug, g in df_rows.groupby("UG"):
+            codes = sorted(set(g["Restrição"].astype(str)))
+            grouped[str(ug)] = {
+                "Quantidade de Restrições": int(len(g)),
+                "Códigos de Restrição": "; ".join(codes),
+                "Situação": "Com restrição",
+            }
+
+    base = all_ugs_df.copy() if all_ugs_df is not None and not all_ugs_df.empty else pd.DataFrame(columns=["UG", "Nome da UG"])
+    if base.empty and grouped:
+        base = pd.DataFrame({"UG": sorted(grouped.keys()), "Nome da UG": [""] * len(grouped)})
+
+    if "SituaçãoBase" in base.columns:
+        base = base.rename(columns={"SituaçãoBase": "Situação"})
+    else:
+        base["Situação"] = "Sem restrição"
+
+    if "Nome da UG" not in base.columns:
+        base["Nome da UG"] = ""
+    base["UG"] = base["UG"].astype(str).str.replace(r"\D", "", regex=True).str.zfill(6)
+    base["Nome da UG"] = base.apply(
+        lambda r: UG_NAME_MAP.get(str(r.get("UG", "")).zfill(6), r.get("Nome da UG", "")),
+        axis=1,
+    )
+
+    out_rows = []
+    seen_ugs = set()
+    for _, rec in base.iterrows():
+        ug = sanitize_digits(rec.get("UG", ""), 6)
+        if not ug:
+            continue
+        seen_ugs.add(ug)
+        nome_ug = UG_NAME_MAP.get(ug, rec.get("Nome da UG", ""))
+        if ug in grouped:
+            out_rows.append({
+                "UG": ug,
+                "Nome da UG": nome_ug,
+                "Quantidade de Restrições": grouped[ug]["Quantidade de Restrições"],
+                "Códigos de Restrição": grouped[ug]["Códigos de Restrição"],
+                "Situação": "Com restrição",
+            })
+        else:
+            out_rows.append({
+                "UG": ug,
+                "Nome da UG": nome_ug,
+                "Quantidade de Restrições": 0,
+                "Códigos de Restrição": "-",
+                "Situação": rec.get("Situação", "Sem restrição") or "Sem restrição",
+            })
+
+    for ug, info in grouped.items():
+        if ug not in seen_ugs:
+            out_rows.append({
+                "UG": ug,
+                "Nome da UG": UG_NAME_MAP.get(ug, ""),
+                "Quantidade de Restrições": info["Quantidade de Restrições"],
+                "Códigos de Restrição": info["Códigos de Restrição"],
+                "Situação": "Com restrição",
+            })
+
+    if not out_rows:
+        return pd.DataFrame(columns=["UG", "Nome da UG", "Quantidade de Restrições", "Códigos de Restrição", "Situação"])
+
+    return pd.DataFrame(out_rows).sort_values(["UG"]).reset_index(drop=True)
+
+
+def dataframe_to_xlsx_bytes(dfs: Dict[str, pd.DataFrame]) -> bytes:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for sheet_name, df in dfs.items():
+            safe = sheet_name[:31]
+            df.to_excel(writer, sheet_name=safe, index=False)
+    return buffer.getvalue()
+
+
+def generate_validation_report(header: Dict[str, str], rows: List[RestrictionRow], errors: List[str], warnings: List[str], metadata: ReportMetadata) -> str:
+    lines = [
+        "RELATÓRIO DE VALIDAÇÃO - CSV DE RESTRIÇÕES SIAFI",
+        "",
+        f"Nível: {header.get('nivel', '')}",
+        f"Código responsável: {header.get('codigo_responsavel', '')}",
+        f"Mês: {header.get('mes', '')}",
+        f"Ano: {header.get('ano', '')}",
+        f"Setorial contábil identificada: {metadata.setorial_contabil or ''}",
+                f"Quantidade de detalhes: {len(rows)}",
+        "",
+        "LOGS E METADADOS:",
+    ]
+    lines.extend([f"- {x}" for x in metadata.logs] or ["- Sem logs."])
+    lines.extend(["", "ERROS:"])
+    lines.extend([f"- {e}" for e in errors] or ["- Nenhum erro identificado."])
+    lines.extend(["", "ALERTAS:"])
+    lines.extend([f"- {w}" for w in warnings] or ["- Nenhum alerta identificado."])
+    return "\n".join(lines)
+
+
+def inject_template(target_df: pd.DataFrame, ug: str, template_name: str) -> pd.DataFrame:
+    template = TEMPLATE_LIBRARY[template_name]
+    new_row = {
+        "UG": sanitize_digits(ug, 6),
+        "Restrição": template["restricao"],
+        "Motivo": template["motivo"],
+        "Providência": template["providencia"],
+        "Valor": "",
+    }
+    return pd.concat([target_df, pd.DataFrame([new_row])], ignore_index=True)
+
+
+
+
+
+
+def reset_conferencia_filters():
+    st.session_state["conferencia_filtro_ug_val"] = "Todas"
+    st.session_state["conferencia_filtro_restr_val"] = "Todas"
+    st.session_state["conferencia_filter_nonce"] = st.session_state.get("conferencia_filter_nonce", 0) + 1
+
+
+def style_change_flags(df: pd.DataFrame):
+    if df is None or df.empty:
+        return df
+
+    def highlight_row(row):
+        manual = str(row.get("Alterado_Manual", "")).strip().lower() == "sim"
+        lote = str(row.get("Editado_Lote", "")).strip().lower() == "sim"
+        auto = str(row.get("Padronizado_Auto", "")).strip().lower() == "sim"
+        if manual:
+            style = "background-color: #fff3cd; color: #7a4b00; font-weight: 600;"
+        elif lote:
+            style = "background-color: #dbeafe; color: #1d4ed8; font-weight: 600;"
+        elif auto:
+            style = "background-color: #dcfce7; color: #166534; font-weight: 600;"
+        else:
+            style = ""
+        return [style] * len(row)
+
+    return df.style.apply(highlight_row, axis=1)
+
+
+
+def reset_app():
+    st.session_state.manual_df = pd.DataFrame(columns=["UG", "Restrição", "Motivo", "Providência", "Valor"])
+    st.session_state.header_defaults = {"nivel": "1", "codigo_responsavel": "153062", "mes": "", "ano": str(datetime.now().year), "setorial_contabil": ""}
+    st.session_state.report_metadata = asdict(ReportMetadata())
+    st.session_state.working_rows = []
+    st.session_state.all_ugs_df = pd.DataFrame(columns=["UG", "Nome da UG", "SituaçãoBase"])
+    st.session_state.manually_edited_indices = []
+    st.session_state.batch_edited_indices = []
+    st.session_state.auto_standardized_indices = []
+    st.session_state.last_edit_message = ""
+    st.session_state.import_logs = []
+    st.session_state.last_loaded_signature = ""
+    st.session_state.last_loaded_origin = ""
+    st.session_state.uploader_nonce = st.session_state.get("uploader_nonce", 0) + 1
+    st.session_state.conferencia_filter_nonce = 0
+    st.session_state.conferencia_filtro_ug_val = "Todas"
+    st.session_state.conferencia_filtro_restr_val = "Todas"
+    st.session_state.conferencia_filter_nonce = 0
+    st.session_state.header_widget_nonce = st.session_state.get("header_widget_nonce", 0) + 1
+
+
+
+
+
+def month_option_label(month_value) -> str:
+    if month_value in ("", None):
+        return "Selecione..."
+    try:
+        month_int = int(str(month_value))
+        if month_int in MONTHS:
+            return f"{month_int:02d} - {MONTHS[month_int]}"
+    except Exception:
+        pass
+    return str(month_value)
+
+
+def load_homologated_ug_base_default() -> pd.DataFrame:
+    return pd.DataFrame(columns=["UG", "Nome da UG"])
+
+
+def parse_uploaded_ug_base(uploaded_file) -> pd.DataFrame:
+    name = getattr(uploaded_file, "name", "").lower()
+    if name.endswith(".csv"):
+        df = None
+        for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+            try:
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, encoding=enc)
+                break
+            except Exception:
+                continue
+        if df is None:
+            raise ValueError("Não foi possível ler a base de UGs em CSV.")
+    else:
+        uploaded_file.seek(0)
+        df = pd.read_excel(uploaded_file)
+
+    normalized = {c: str(c).strip().lower() for c in df.columns}
+    ug_col = next((c for c, n in normalized.items() if n in {"ug", "unidade gestora", "codigo ug", "código ug"}), None)
+    nome_col = next((c for c, n in normalized.items() if n in {"nome da ug", "nome ug", "nome"}), None)
+    if ug_col is None:
+        raise ValueError("A base de UGs precisa conter uma coluna 'UG'.")
+
+    out = pd.DataFrame()
+    out["UG"] = df[ug_col].astype(str).str.replace(r"\D", "", regex=True).str.zfill(6)
+    out["Nome da UG"] = df[nome_col].astype(str) if nome_col else ""
+    out = out[out["UG"].str.strip() != ""].drop_duplicates()
+    return out.reset_index(drop=True)
+
+
+
+def render_header_inputs(defaults: Dict[str, str], metadata: ReportMetadata):
+    setorial_detectada = sanitize_digits(defaults.get("setorial_contabil", "") or metadata.setorial_contabil, 6)
+
+    current_year = str(datetime.now().year)
+    default_year = str(defaults.get("ano", current_year) or current_year)
+
+    raw_default_month = defaults.get("mes", "")
+    if str(raw_default_month).strip() == "":
+        default_month = ""
+    else:
+        try:
+            default_month = int(str(raw_default_month))
+        except Exception:
+            digits = sanitize_digits(raw_default_month, None)
+            default_month = int(digits) if digits and digits.isdigit() and 1 <= int(digits) <= 12 else ""
+
+    widget_nonce = st.session_state.get("header_widget_nonce", 0)
+
+    month_options = [""] + list(MONTHS.keys())
+
+    c1, c2, c3 = st.columns([1.1, 1.1, 1.1])
+    with c1:
+        nivel = st.radio(
+            "Nível da conformidade",
+            options=["1", "2"],
+            horizontal=False,
+            format_func=lambda x: NIVEL_OPTIONS[x],
+            index=0 if defaults.get("nivel", "1") == "1" else 1,
+            key=f"header_nivel_{widget_nonce}",
+        )
+    with c2:
+        if nivel == "2":
+            codigo_responsavel = ORGAO_CODE
+            st.text_input("Código responsável", value=codigo_responsavel, disabled=True, key=f"header_codigo_{widget_nonce}")
+        else:
+            codigo_responsavel = setorial_detectada or sanitize_digits(defaults.get("codigo_responsavel", "153062"), 6)
+            st.text_input("Código responsável", value=codigo_responsavel, disabled=True, key=f"header_codigo_{widget_nonce}")
+    with c3:
+        selected_month = st.selectbox(
+            "Mês de referência",
+            options=month_options,
+            index=month_options.index(default_month) if default_month in month_options else 0,
+            format_func=lambda x: "Selecione..." if x == "" else f"{x:02d} - {MONTHS[x]}",
+            key=f"header_mes_referencia_{widget_nonce}",
+        )
+
+    d1, d2 = st.columns([1.0, 1.2])
+    with d1:
+        ano_ref = st.text_input("Ano de referência", value=default_year, max_chars=4, key=f"header_ano_referencia_{widget_nonce}")
+    with d2:
+        nome_arquivo = build_standard_filename(selected_month, ano_ref) if selected_month != "" else ""
+        st.text_input("Nome do arquivo CSV", value=nome_arquivo, disabled=True, key=f"header_nome_arquivo_{widget_nonce}")
+
+    return nivel, codigo_responsavel, selected_month, ano_ref, nome_arquivo
+
+
+st.set_page_config(page_title=APP_TITLE, layout="wide")
+
+initialize_session_state()
+
+
+def inject_visual_styles():
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            padding-top: 1.15rem;
+            padding-bottom: 1.5rem;
+        }
+        .app-hero {
+            background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 100%);
+            border: 1px solid #dbeafe;
+            border-radius: 16px;
+            padding: 0.9rem 1rem;
+            margin-bottom: 0.9rem;
+        }
+        .app-hero-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 0.25rem;
+        }
+        .app-hero-text {
+            color: #334155;
+            font-size: 0.95rem;
+            margin: 0;
+        }
+        div[data-baseweb="tab-list"] {
+            gap: 0.45rem;
+            margin-bottom: 0.4rem;
+        }
+        button[role="tab"] {
+            border-radius: 999px !important;
+            background: #f3f7fb !important;
+            border: 1px solid #dbe3ef !important;
+            padding: 0.4rem 0.95rem !important;
+        }
+        button[role="tab"][aria-selected="true"] {
+            background: #dbeafe !important;
+            color: #1e3a8a !important;
+            border-color: #93c5fd !important;
+            font-weight: 700 !important;
+        }
+        div[data-testid="stMetric"] {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 14px;
+            padding: 0.65rem 0.8rem;
+        }
+        div[data-testid="stExpander"] {
+            border: 1px solid #dbe3ef;
+            border-radius: 14px;
+            overflow: hidden;
+            background: #ffffff;
+        }
+        div[data-testid="stExpander"] details summary p {
+            font-weight: 700 !important;
+        }
+        div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        div.stButton > button, div.stDownloadButton > button {
+            border-radius: 10px;
+            font-weight: 700;
+            min-height: 2.65rem;
+            border: 1px solid #cbd5e1;
+            transition: all 0.15s ease-in-out;
+        }
+        div.stButton > button:hover, div.stDownloadButton > button:hover {
+            transform: translateY(-1px);
+            border-color: #60a5fa;
+            box-shadow: 0 4px 14px rgba(59, 130, 246, 0.12);
+        }
+        .visual-note {
+            background: #f8fafc;
+            border-left: 4px solid #3b82f6;
+            padding: 0.8rem 0.95rem;
+            border-radius: 10px;
+            margin: 0.4rem 0 0.8rem 0;
+            color: #334155;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+def render_visual_banner(title: str, text: str, icon: str = "ℹ️"):
+    st.markdown(
+        f"""
+        <div class="app-hero">
+            <div class="app-hero-title">{icon} {title}</div>
+            <p class="app-hero-text">{text}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+inject_visual_styles()
+
+
+if "manual_df" not in st.session_state:
+    st.session_state.manual_df = pd.DataFrame(columns=["UG", "Restrição", "Motivo", "Providência", "Valor"])
+if "header_defaults" not in st.session_state:
+    st.session_state.header_defaults = {"nivel": "1", "codigo_responsavel": "153062", "mes": "", "ano": str(datetime.now().year), "setorial_contabil": ""}
+if "report_metadata" not in st.session_state:
+    st.session_state.report_metadata = asdict(ReportMetadata())
+if "working_rows" not in st.session_state:
+    st.session_state.working_rows = []
+if "all_ugs_df" not in st.session_state:
+    st.session_state.all_ugs_df = pd.DataFrame(columns=["UG", "Nome da UG", "SituaçãoBase"])
+if "official_ug_df" not in st.session_state:
+    st.session_state.official_ug_df = pd.DataFrame(columns=["UG", "Nome da UG"])
+if "manually_edited_indices" not in st.session_state:
+    st.session_state.manually_edited_indices = []
+if "batch_edited_indices" not in st.session_state:
+    st.session_state.batch_edited_indices = []
+if "auto_standardized_indices" not in st.session_state:
+    st.session_state.auto_standardized_indices = []
+if "last_edit_message" not in st.session_state:
+    st.session_state.last_edit_message = ""
+if "import_logs" not in st.session_state:
+    st.session_state.import_logs = []
+if "header_widget_nonce" not in st.session_state:
+    st.session_state.header_widget_nonce = 0
+if "conferencia_filtro_ug_val" not in st.session_state:
+    st.session_state.conferencia_filtro_ug_val = "Todas"
+if "conferencia_filtro_restr_val" not in st.session_state:
+    st.session_state.conferencia_filtro_restr_val = "Todas"
+    st.session_state.last_loaded_signature = ""
+    st.session_state.last_loaded_origin = ""
+    st.session_state.uploader_nonce = st.session_state.get("uploader_nonce", 0) + 1
+    st.session_state.conferencia_filter_nonce = 0
+    st.session_state.conferencia_filtro_ug_val = "Todas"
+    st.session_state.conferencia_filtro_restr_val = "Todas"
+    st.session_state.conferencia_filter_nonce = 0
+if "last_loaded_signature" not in st.session_state:
+    st.session_state.last_loaded_signature = ""
+if "last_loaded_origin" not in st.session_state:
+    st.session_state.last_loaded_origin = ""
+if "uploader_nonce" not in st.session_state:
+    st.session_state.uploader_nonce = 0
+if "conferencia_filter_nonce" not in st.session_state:
+    st.session_state.conferencia_filter_nonce = 0
+
+st.title(APP_TITLE)
+render_visual_banner("Ferramenta de geração e conferência", "Importe dados, padronize textos, revise por UG e exporte o CSV final pronto para upload.", "✨")
+
+st.sidebar.header("Opções de validação")
+bloquear_duplicidades = st.sidebar.checkbox("Bloquear duplicidade UG + restrição", value=True)
+permitir_alerta_campos_vazios = st.sidebar.checkbox("Alertar motivo/providência vazios", value=True)
+
+render_sprint_banner()
+
+modo_modular_v6 = st.toggle("Usar interface modular da v6.0 (Sprint 9)", value=True)
+
+with st.expander("Diagnóstico rápido da interface modular", expanded=False):
+    st.write({
+        "root_dir": str(ROOT_DIR),
+        "ui_import_tab.py": (ROOT_DIR / "ui" / "import_tab.py").exists(),
+        "ui_edit_tab.py": (ROOT_DIR / "ui" / "edit_tab.py").exists(),
+        "ui_summary_tab.py": (ROOT_DIR / "ui" / "summary_tab.py").exists(),
+        "ui_export_tab.py": (ROOT_DIR / "ui" / "export_tab.py").exists(),
+        "ui_conrestcon_tab.py": (ROOT_DIR / "ui" / "conrestcon_tab.py").exists(),
+        "ui_homologation_tab.py": (ROOT_DIR / "ui" / "homologation_tab.py").exists(),
+        "import": render_import_tab_v6 is not None,
+        "edit": render_edit_tab_v6 is not None,
+        "summary": render_summary_tab_v6 is not None,
+        "export": render_export_tab_v6 is not None,
+        "conrestcon": render_conrestcon_tab_v6 is not None,
+        "homologation_module": render_homologation_tab_v6 is not None,
+        "homologation_inline_fallback": "render_homologation_tab_inline" in globals(),
+        "homologation_effective": (render_homologation_tab_v6 is not None) or ("render_homologation_tab_inline" in globals()),
+    })
+
+
+if modo_modular_v6:
+    modular_tabs = []
+    if render_import_tab_v6:
+        modular_tabs.append(("📥 Importação", render_import_tab_v6))
+    if render_edit_tab_v6:
+        modular_tabs.append(("🛠️ Conferência e Edição", render_edit_tab_v6))
+    if render_summary_tab_v6:
+        modular_tabs.append(("📊 Resumo por UG", render_summary_tab_v6))
+    if render_export_tab_v6:
+        modular_tabs.append(("📤 Exportação", render_export_tab_v6))
+    if render_conrestcon_tab_v6:
+        modular_tabs.append(("📚 CONRESTCON", render_conrestcon_tab_v6))
+
+    homologation_effective_fn = render_homologation_tab_v6 if render_homologation_tab_v6 else render_homologation_tab_inline
+
+    if modular_tabs:
+        st.warning("Modo modular carregado parcialmente. As abas disponíveis foram exibidas.")
+        tabs = st.tabs([name for name, _fn in modular_tabs])
+        for tab, (_name, fn) in zip(tabs, modular_tabs):
+            with tab:
+                fn()
+
+    st.markdown("---")
+    st.markdown("## ✅ Homologação")
+    homologation_effective_fn()
+    st.stop()
+tabs = st.tabs(["📥 Importação", "🛠️ Conferência e Edição", "📊 Resumo por UG", "📤 Exportação", "📚 CONRESTCON"])
+
+
+with tabs[0]:
+    render_visual_banner("Importação de dados", "Escolha a origem dos dados e confira os parâmetros do header antes de iniciar o tratamento da base.", "📥")
+
+    with st.expander("Guia do Usuário", expanded=False):
+        st.markdown("""
+### Passo a passo prático de uso
+
+**1. Abrir a aplicação**  
+Ao abrir o app, você verá as abas principais:
+- **Importação**
+- **Conferência e Edição**
+- **Resumo por UG**
+- **Exportação**
+- **CONRESTCON**
+
+**2. Importar a base de dados**  
+Na aba **Importação**, escolha a origem dos dados:
+- **PDF do Tesouro Gerencial**
+- **Planilha estruturada (CSV/Excel)**
+- **CSV SIAFI já existente**
+- **Digitação manual**
+
+**3. Se usar PDF do Tesouro Gerencial**
+1. Clique em **Envie o relatório em PDF**.
+2. Selecione o arquivo.
+3. Clique em **Processar PDF**.
+4. O sistema fará a leitura das restrições e preencherá os dados da base.
+
+**4. Se usar planilha estruturada**
+1. Envie o arquivo CSV/Excel.
+2. Clique em **Processar planilha**.
+3. O sistema carregará os registros para edição.
+
+**5. Se usar CSV SIAFI já existente**
+1. Envie o CSV.
+2. Clique em **Processar CSV existente**.
+3. O app lerá o header e os detalhes do arquivo.
+
+**6. Se usar digitação manual**
+1. Preencha ou edite a grade manual.
+2. Clique em **Processar digitação manual**.
+
+**7. Conferir os parâmetros do header**  
+Ainda na aba **Importação**, confira:
+- **Nível da conformidade**
+- **Código responsável**
+- **Mês de referência**
+- **Ano de referência**
+- **Nome do arquivo CSV**
+
+**8. Reiniciar a aplicação, se necessário**  
+Na parte inferior da aba **Importação** existe o botão **Reiniciar Aplicativo e Limpar Dados**.  
+Use-o para apagar a base carregada, limpar filtros, remover arquivos anexados e começar novamente.
+
+**9. Filtrar os registros para edição**  
+Na aba **Conferência e Edição**, use os filtros por:
+- **UG**
+- **Restrição**
+
+Eles definem quais registros serão exibidos e afetados pelas ações.
+
+**10. Usar a grade principal**  
+Na grade principal você pode:
+- visualizar os registros;
+- editar manualmente os campos;
+- marcar linhas específicas na coluna **Selecionar**.
+
+A coluna **Selecionar** é usada quando quiser aplicar ações apenas em **linhas selecionadas**.
+
+**11. Salvar ajustes manuais**
+Depois de editar diretamente a grade, clique em **Salvar Ajustes Manuais**.
+
+**12. Aplicar capitalização**  
+No **Módulo 2 — Edição por capitalização**:
+- escolha o tipo de capitalização;
+- escolha o escopo:
+  - **Base inteira**
+  - **Filtro atual**
+  - **Linhas selecionadas**
+- clique em **Aplicar Capitalização**.
+
+A capitalização será aplicada às colunas **Motivo** e **Providência**.
+
+**13. Aplicar padronização por código de restrição**  
+No **Módulo 3 — Padronização por código de restrição**:
+- escolha o escopo;
+- clique em **Aplicar Padronização por Restrição**.
+
+O sistema padroniza o campo **Motivo** com base na tabela **CONRESTCON**.
+
+**14. Fazer edição em lote**  
+No **Módulo 4 — Edição em lote de texto**:
+1. preencha um novo **Motivo** e/ou uma nova **Providência**;
+2. marque se deseja sobrescrever textos existentes;
+3. clique em **Aplicar Edição em Lote**.
+
+**15. Consultar o resumo por UG**  
+Na aba **Resumo por UG**, você verá:
+- **Restrições contábeis por Unidade Gestora**
+- **Quadro Resumo por Restrição**
+
+**16. Consultar a tabela CONRESTCON**  
+Na aba **CONRESTCON**, você pode:
+- pesquisar por código;
+- filtrar por digitação;
+- consultar o título padronizado da restrição.
+
+**17. Exportar o resultado**  
+Na aba **Exportação**:
+1. revise a prévia;
+2. confira se não há erros impeditivos;
+3. baixe o arquivo desejado.
+
+**18. Fluxo recomendado**
+1. **Importação**
+2. **Conferência e Edição**
+3. **Resumo por UG**
+4. **Exportação**
+5. consulta à **CONRESTCON** quando necessário
+
+**19. Dicas práticas**
+- Use **Filtro atual** para tratar apenas uma UG ou restrição.
+- Use **Linhas selecionadas** para tratar casos específicos.
+- Sempre clique em **Salvar Ajustes Manuais** depois de editar a grade.
+- Antes de exportar, confira o **Mês de referência**, o **Ano** e o **Nome do arquivo**.
+""")
+
+    st.markdown("### Etapa 1 — Importação")
+
+    with st.expander("Base homologada de UGs para validação", expanded=False):
+        if "official_ug_df" not in st.session_state or st.session_state.official_ug_df is None or getattr(st.session_state.official_ug_df, "empty", True):
+            st.session_state.official_ug_df = load_homologated_ug_base_default()
+
+        uploaded_ug_base = st.file_uploader(
+            "Envie base oficial de UGs homologadas (opcional, CSV/Excel)",
+            type=["csv", "xlsx", "xls"],
+            key=f"official_ug_base_{st.session_state.get('uploader_nonce', 0)}",
+        )
+        if uploaded_ug_base is not None:
+            try:
+                parsed_ug_df = parse_uploaded_ug_base(uploaded_ug_base)
+                st.session_state.official_ug_df = parsed_ug_df
+                st.success(f"Base homologada de UGs carregada com {len(parsed_ug_df)} registros.")
+            except Exception as e:
+                st.error(str(e))
+
+        current_official = st.session_state.get("official_ug_df", pd.DataFrame(columns=["UG", "Nome da UG"]))
+        st.caption(f"UGs homologadas disponíveis para validação: {len(current_official)}")
+        if not current_official.empty:
+            st.dataframe(current_official.head(20), use_container_width=True, height=180)
+
+    origem = st.radio(
+        "Escolha a origem dos dados",
+        options=["PDF do Tesouro Gerencial", "Planilha estruturada (CSV/Excel)", "CSV SIAFI já existente", "Digitação manual"],
+        horizontal=True,
+    )
+
+    rows: List[RestrictionRow] = []
+    header_defaults = st.session_state.header_defaults.copy()
+    metadata = ReportMetadata(**st.session_state.report_metadata)
+
+    if origem == "PDF do Tesouro Gerencial":
+        uploaded_pdf = st.file_uploader("Envie o relatório em PDF", type=["pdf"], key=f"pdf_upload_{st.session_state.get('uploader_nonce', 0)}")
+        if uploaded_pdf is not None:
+            if st.button("Processar PDF", use_container_width=True):
+                header_text = extract_pdf_header_page(uploaded_pdf)
+                raw_text = extract_text_from_pdf(uploaded_pdf)
+                rows = parse_report_text(raw_text)
+                metadata = extract_report_metadata(raw_text, header_text=header_text)
+                st.session_state.report_metadata = asdict(metadata)
+                header_defaults["setorial_contabil"] = metadata.setorial_contabil
+                if metadata.mes_referencia:
+                    try:
+                        header_defaults["mes"] = MONTH_ABBR_REV.get(metadata.mes_referencia.split("/")[0], "")
+                        header_defaults["ano"] = metadata.mes_referencia.split("/")[1]
+                    except Exception:
+                        pass
+                else:
+                    header_defaults["mes"] = ""
+                st.session_state.header_defaults = header_defaults.copy()
+                st.session_state.header_widget_nonce = st.session_state.get("header_widget_nonce", 0) + 1
+                st.session_state.all_ugs_df = extract_all_ugs_from_report(raw_text)
+                st.session_state.import_logs = metadata.logs
+                st.session_state.working_rows = [asdict(r) for r in rows]
+                st.session_state.manually_edited_indices = []
+                st.session_state.batch_edited_indices = []
+                st.session_state.auto_standardized_indices = []
+                st.session_state.last_loaded_signature = source_signature(uploaded_pdf)
+                st.session_state.last_loaded_origin = origem
+                st.success(f"PDF processado com sucesso. {len(rows)} restrições foram identificadas automaticamente. Mês de referência carregado: {month_option_label(header_defaults.get('mes', ''))}.")
+        i1, i2 = st.columns(2)
+        current_md = ReportMetadata(**st.session_state.report_metadata)
+        i1.metric("Setorial contábil", current_md.setorial_contabil or "")
+        i2.metric("UGs mapeadas no relatório", len(st.session_state.all_ugs_df))
+
+    elif origem == "Planilha estruturada (CSV/Excel)":
+        uploaded_table = st.file_uploader("Envie planilha com colunas UG, Restrição, Motivo, Providência e Valor", type=["csv", "xlsx", "xls"], key=f"table_upload_{st.session_state.get('uploader_nonce', 0)}")
+        if uploaded_table is not None:
+            try:
+                df_source = parse_structured_table(uploaded_table)
+                st.dataframe(df_source, use_container_width=True, height=220)
+                if st.button("Processar planilha", use_container_width=True):
+                    rows = map_table_to_rows(df_source)
+                    file_month, file_year = infer_month_year_from_filename(getattr(uploaded_table, "name", ""))
+                    df_month, df_year = infer_month_year_from_structured_df(df_source)
+                    inferred_month = df_month or file_month
+                    inferred_year = df_year or file_year or str(datetime.now().year)
+
+                    header_defaults["mes"] = inferred_month or ""
+                    header_defaults["ano"] = inferred_year
+                    st.session_state.header_defaults.update(header_defaults)
+                    st.session_state.header_widget_nonce = st.session_state.get("header_widget_nonce", 0) + 1
+
+                    st.session_state.working_rows = [asdict(r) for r in rows]
+                    st.session_state.manually_edited_indices = []
+                    st.session_state.batch_edited_indices = []
+                    st.session_state.auto_standardized_indices = []
+                    st.session_state.last_loaded_signature = source_signature(uploaded_table)
+                    st.session_state.last_loaded_origin = origem
+                    st.session_state.import_logs = [
+                        f"Mês inferido da planilha/arquivo: {month_option_label(inferred_month) if inferred_month else '(não identificado)'}",
+                        f"Ano inferido da planilha/arquivo: {inferred_year}",
+                    ]
+                    if rows:
+                        ugs = sorted({r.ug for r in rows})
+                        st.session_state.all_ugs_df = pd.DataFrame({"UG": ugs, "Nome da UG": ["" for _ in ugs], "SituaçãoBase": ["Com restrição" for _ in ugs]})
+                    st.success(f"{len(rows)} restrições carregadas da planilha.")
+            except Exception as e:
+                st.error(str(e))
+
+
+    elif origem == "CSV SIAFI já existente":
+        uploaded_csv = st.file_uploader("Envie um CSV já existente para conferência e reprocessamento", type=["csv"], key=f"csv_upload_{st.session_state.get('uploader_nonce', 0)}")
+        if uploaded_csv is not None:
+            if st.button("Processar CSV existente", use_container_width=True):
+                header_defaults, rows = parse_existing_csv(uploaded_csv)
+                if not header_defaults.get("ano"):
+                    header_defaults["ano"] = str(datetime.now().year)
+                if "mes" not in header_defaults:
+                    header_defaults["mes"] = ""
+
+                st.session_state.header_defaults.update(header_defaults)
+                st.session_state.header_widget_nonce = st.session_state.get("header_widget_nonce", 0) + 1
+
+                st.session_state.working_rows = [asdict(r) for r in rows]
+                st.session_state.manually_edited_indices = []
+                st.session_state.batch_edited_indices = []
+                st.session_state.auto_standardized_indices = []
+                st.session_state.last_loaded_signature = source_signature(uploaded_csv)
+                st.session_state.last_loaded_origin = origem
+                st.session_state.import_logs = [
+                    f"Leitura do CSV concluída. Mês localizado no header do arquivo: {month_option_label(header_defaults.get('mes', ''))}",
+                    f"Mês aplicado ao header do sistema: {month_option_label(header_defaults.get('mes', ''))}",
+                    f"Ano lido/inferido do CSV: {header_defaults.get('ano', str(datetime.now().year))}",
+                    f"DEBUG valor final do header[mes]: {header_defaults.get('mes', '')}",
+                    f"DEBUG tipo do valor do mês: {type(header_defaults.get('mes', '')).__name__}",
+                    f"DEBUG nome do arquivo CSV: {getattr(uploaded_csv, 'name', '')}",
+                ]
+                if rows:
+                    ugs = sorted({r.ug for r in rows})
+                    st.session_state.all_ugs_df = pd.DataFrame({"UG": ugs, "Nome da UG": ["" for _ in ugs], "SituaçãoBase": ["Com restrição" for _ in ugs]})
+                st.success(f"CSV processado com sucesso. {len(rows)} registros de detalhe foram carregados. Mês de referência carregado: {month_option_label(header_defaults.get('mes', ''))}.")
+
+    else:
+        c_a, c_b = st.columns([2, 3])
+        with c_a:
+            ug_modelo = st.text_input("UG para inserir modelo", value="153062")
+            modelo = st.selectbox("Modelo padronizado (CONRESTCON)", options=[f'{r["Restrição"]} - {r["Título"]}' for r in CONRESTCON_ROWS])
+            if st.button("Adicionar modelo na grade"):
+                codigo_modelo = re.sub(r"\D", "", str(modelo).split(" - ")[0]).zfill(3)
+                titulo_modelo = CONRESTCON_MOTIVOS.get(codigo_modelo, "")
+                new_row = {
+                    "UG": sanitize_digits(ug_modelo, 6),
+                    "Restrição": codigo_modelo,
+                    "Motivo": titulo_modelo,
+                    "Providência": "",
+                    "Valor": "",
+                }
+                st.session_state.manual_df = pd.concat([st.session_state.manual_df, pd.DataFrame([new_row])], ignore_index=True)
+        with c_b:
+            st.caption("Você pode inserir modelos padronizados com base na nova tabela CONRESTCON e complementar manualmente os campos da grade.")
+        if st.session_state.manual_df.empty:
+            st.session_state.manual_df = pd.DataFrame([{
+                "UG": "153258",
+                "Restrição": "634",
+                "Motivo": "Bens adquiridos antes de 2010 permanecem com valores históricos, necessitando de reavaliação.",
+                "Providência": "Aguardando providências por parte da Administração Central para a realização do processo de reavaliação dos bens.",
+                "Valor": "",
+            }])
+        edited_df = st.data_editor(st.session_state.manual_df, num_rows="dynamic", use_container_width=True, height=300)
+        st.session_state.manual_df = edited_df.copy()
+        if st.button("Processar digitação manual", use_container_width=True):
+            rows = map_table_to_rows(edited_df)
+            st.session_state.working_rows = [asdict(r) for r in rows]
+            st.session_state.manually_edited_indices = []
+            st.session_state.batch_edited_indices = []
+            st.session_state.auto_standardized_indices = []
+            st.session_state.last_loaded_signature = f"manual|{len(edited_df)}"
+            st.session_state.last_loaded_origin = origem
+            if rows:
+                ugs = sorted({r.ug for r in rows})
+                st.session_state.all_ugs_df = pd.DataFrame({"UG": ugs, "Nome da UG": ["" for _ in ugs], "SituaçãoBase": ["Com restrição" for _ in ugs]})
+            st.success(f"{len(rows)} linhas manuais carregadas na base.")
+
+    metadata = ReportMetadata(**st.session_state.report_metadata)
+    defaults = st.session_state.header_defaults.copy()
+    st.markdown("### Parâmetros do Header")
+    nivel, codigo_responsavel, mes, ano, nome_arquivo = render_header_inputs(defaults, metadata)
+    st.session_state.header_defaults.update({"nivel": nivel, "codigo_responsavel": codigo_responsavel, "mes": mes, "ano": ano})
+
+    if st.session_state.import_logs:
+        with st.expander("Logs e metadados da importação", expanded=False):
+            for item in st.session_state.import_logs:
+                st.write(f"- {item}")
+
+    if st.session_state.working_rows:
+        st.info(f"Base em trabalho preservada com {len(st.session_state.working_rows)} registro(s). Ela só será substituída quando você clicar em um botão de processamento nesta guia.")
+
+    st.markdown("---")
+    st.markdown("### Reinicialização")
+    st.markdown('<div class="visual-note"><strong>Atenção:</strong> ao reiniciar, a base em trabalho, os parâmetros e os arquivos anexados nas caixas de upload serão limpos.</div>', unsafe_allow_html=True)
+    if st.button("🔄 Reiniciar aplicativo", use_container_width=True, key="reset_bottom_import", type="secondary"):
+        reset_app()
+        st.rerun()
+
+
+
+
+
+with tabs[1]:
+    render_visual_banner("Conferência e edição", "Use filtros, faça ajustes manuais ou em lote e aplique capitalização e padronização visualmente na grade principal.", "🛠️")
+    st.markdown("### Etapa 2 — Conferência e Edição")
+    st.caption("A base em trabalho é preservada após padronizações e ajustes manuais. Ela não retorna ao padrão anterior, a menos que você processe uma nova importação.")
+
+    if st.session_state.last_edit_message:
+        st.success(st.session_state.last_edit_message)
+        st.session_state.last_edit_message = ""
+
+    rows = [RestrictionRow(**r) for r in st.session_state.working_rows] if st.session_state.working_rows else []
+    preview_df = rows_to_dataframe(rows)
+
+    if preview_df.empty:
+        st.info("Importe uma base na guia Importação.")
+    else:
+        ugs_disponiveis = ["Todas"] + sorted(preview_df["UG"].dropna().astype(str).unique().tolist())
+        restr_disponiveis = ["Todas"] + sorted(preview_df["Restrição"].dropna().astype(str).unique().tolist())
+
+        current_ug_val = st.session_state.get("conferencia_filtro_ug_val", "Todas")
+        current_restr_val = st.session_state.get("conferencia_filtro_restr_val", "Todas")
+        if current_ug_val not in ugs_disponiveis:
+            current_ug_val = "Todas"
+            st.session_state["conferencia_filtro_ug_val"] = "Todas"
+        if current_restr_val not in restr_disponiveis:
+            current_restr_val = "Todas"
+            st.session_state["conferencia_filtro_restr_val"] = "Todas"
+
+        nonce = st.session_state.get("conferencia_filter_nonce", 0)
+
+        render_edit_module_title("Módulo 1 — Filtros de seleção")
+        f1, f2, f3 = st.columns([1, 1, 0.9])
+        with f1:
+            filtro_ug = st.selectbox(
+                "Filtrar por UG",
+                options=ugs_disponiveis,
+                index=ugs_disponiveis.index(current_ug_val) if current_ug_val in ugs_disponiveis else 0,
+                key=f"conferencia_filtro_ug_widget_{nonce}",
+            )
+        with f2:
+            filtro_restr = st.selectbox(
+                "Filtrar por restrição",
+                options=restr_disponiveis,
+                index=restr_disponiveis.index(current_restr_val) if current_restr_val in restr_disponiveis else 0,
+                key=f"conferencia_filtro_restr_widget_{nonce}",
+            )
+        with f3:
+            st.write("")
+            st.write("")
+            if st.button("🧹 Limpar filtros", use_container_width=True, key=f"limpar_filtros_{nonce}", type="secondary"):
+                reset_conferencia_filters()
+                st.rerun()
+
+        st.session_state["conferencia_filtro_ug_val"] = filtro_ug
+        st.session_state["conferencia_filtro_restr_val"] = filtro_restr
+
+        indices_filtrados = [idx for idx, row in enumerate(rows) if (filtro_ug == "Todas" or row.ug == filtro_ug) and (filtro_restr == "Todas" or row.restricao == filtro_restr)]
+        rows_filtradas = [rows[idx] for idx in indices_filtrados]
+        preview_filtrado = rows_to_dataframe(rows_filtradas)
+        preview_filtrado.insert(0, "Selecionar", False)
+
+        render_edit_module_title("Grade principal de conferência e edição")
+        st.caption("Clique diretamente na coluna Selecionar da grade principal para marcar as linhas que serão usadas no escopo 'Linhas selecionadas'.")
+        editor_key = f"editor_conferencia_{filtro_ug}_{filtro_restr}_{len(rows_filtradas)}"
+        edited_preview = st.data_editor(
+            preview_filtrado[["Selecionar", "UG", "Restrição", "Motivo", "Providência", "Valor_SIAFI"]] if not preview_filtrado.empty else preview_filtrado,
+            num_rows="dynamic",
+            use_container_width=True,
+            height=430,
+            key=editor_key,
+        )
+
+        selected_global_indices = []
+        if not edited_preview.empty and "Selecionar" in edited_preview.columns:
+            selected_positions = edited_preview.index[edited_preview["Selecionar"] == True].tolist()
+            selected_global_indices = [indices_filtrados[pos] for pos in selected_positions if pos < len(indices_filtrados)]
+
+        controls1, controls2, controls3 = st.columns([1.2, 1, 1])
+        with controls1:
+            if st.button("💾 Salvar Ajustes Manuais", use_container_width=True, type="primary"):
+                filtered_updated_rows = dataframe_to_rows(edited_preview.drop(columns=["Selecionar"], errors="ignore"))
+                rows_updated, changed_indices = replace_filtered_rows(rows, filtered_updated_rows, filtro_ug, filtro_restr)
+                st.session_state.working_rows = [asdict(r) for r in rows_updated]
+                manual_flags = set(st.session_state.manually_edited_indices)
+                manual_flags.update(changed_indices)
+                st.session_state.manually_edited_indices = sorted(manual_flags)
+                st.session_state.last_edit_message = "Ajustes manuais salvos com sucesso aos registros filtrados."
+                st.rerun()
+        with controls2:
+            st.metric("Linhas no filtro", len(rows_filtradas))
+        with controls3:
+            st.metric("Linhas selecionadas", len(selected_global_indices))
+
+        render_edit_module_title("Módulo 2 — Edição por capitalização")
+        with st.form("form_capitalizacao", clear_on_submit=False):
+            c1, c2 = st.columns([1.4, 1.2])
+            with c1:
+                capitalizacao = st.selectbox(
+                    "Tipo de capitalização",
+                    options=["Primeira letra maiúscula", "minúsculas", "MAIÚSCULAS", "Capitalizar Cada Palavra"],
+                    index=0,
+                )
+            with c2:
+                escopo_capitalizacao = st.radio(
+                    "Escopo da capitalização",
+                    options=["Base inteira", "Filtro atual", "Linhas selecionadas"],
+                    horizontal=False,
+                )
+            submitted_cap = st.form_submit_button("🔤 Aplicar Capitalização", use_container_width=True, type="primary")
+
+        if submitted_cap:
+            target_indices = get_scope_global_indices(rows, escopo_capitalizacao, filtro_ug, filtro_restr, selected_global_indices)
+            updated_rows, changed_indices = apply_capitalization_to_scope(rows, target_indices, capitalizacao)
+            st.session_state.working_rows = [asdict(r) for r in updated_rows]
+            auto_flags = set(st.session_state.auto_standardized_indices)
+            auto_flags.update(changed_indices)
+            st.session_state.auto_standardized_indices = sorted(auto_flags)
+            scope_msg = "à base inteira" if escopo_capitalizacao == "Base inteira" and filtro_ug == "Todas" and filtro_restr == "Todas" else ("às linhas selecionadas" if escopo_capitalizacao == "Linhas selecionadas" else "aos registros filtrados")
+            st.session_state.last_edit_message = f"Capitalização aplicada com sucesso {scope_msg}."
+            st.rerun()
+
+        render_edit_module_title("Módulo 3 — Padronização por código de restrição")
+        with st.form("form_padronizacao_restricao", clear_on_submit=False):
+            escopo_restricao = st.radio(
+                "Escopo da padronização por restrição",
+                options=["Base inteira", "Filtro atual", "Linhas selecionadas"],
+                horizontal=False,
+            )
+            submitted_restr = st.form_submit_button("🧩 Aplicar Padronização por Restrição", use_container_width=True, type="primary")
+
+        if submitted_restr:
+            target_indices = get_scope_global_indices(rows, escopo_restricao, filtro_ug, filtro_restr, selected_global_indices)
+            updated_rows, changed_indices = apply_restriction_standardization_to_scope(rows, target_indices)
+            st.session_state.working_rows = [asdict(r) for r in updated_rows]
+            auto_flags = set(st.session_state.auto_standardized_indices)
+            auto_flags.update(changed_indices)
+            st.session_state.auto_standardized_indices = sorted(auto_flags)
+            scope_msg = "à base inteira" if escopo_restricao == "Base inteira" and filtro_ug == "Todas" and filtro_restr == "Todas" else ("às linhas selecionadas" if escopo_restricao == "Linhas selecionadas" else "aos registros filtrados")
+            st.session_state.last_edit_message = f"Padronização por código de restrição aplicada com sucesso {scope_msg}."
+            st.rerun()
+
+        with st.expander("Módulo 4 — Edição em lote de texto", expanded=False):
+            st.warning("Selecionar linhas no filtro ou aplicar ajuste(s) na base inteira.")
+            b1, b2, b3 = st.columns(3)
+            with b1:
+                novo_motivo = st.text_area("Novo motivo", height=100)
+            with b2:
+                nova_providencia = st.text_area("Nova providência", height=100)
+            with b3:
+                overwrite = st.checkbox("Sobrescrever textos existentes", value=False)
+                if st.button("✏️ Aplicar Edição em Lote", use_container_width=True, type="primary"):
+                    rows_updated, changed_indices = apply_batch_text_update(rows, filtro_ug, filtro_restr, clean_text_field(novo_motivo), clean_text_field(nova_providencia), overwrite=overwrite)
+                    st.session_state.working_rows = [asdict(r) for r in rows_updated]
+                    lote_flags = set(st.session_state.batch_edited_indices)
+                    lote_flags.update(changed_indices)
+                    st.session_state.batch_edited_indices = sorted(lote_flags)
+                    st.session_state.last_edit_message = "Edição em lote aplicada com sucesso aos registros filtrados."
+                    st.rerun()
+
+        rows = [RestrictionRow(**r) for r in st.session_state.working_rows]
+        base_df = rows_to_dataframe(rows)
+        manual_flags = set(st.session_state.manually_edited_indices)
+        batch_flags = set(st.session_state.batch_edited_indices)
+        auto_flags = set(st.session_state.auto_standardized_indices)
+        base_df.insert(0, "Alterado_Manual", ["Sim" if idx in manual_flags else "" for idx in range(len(base_df))])
+        base_df.insert(1, "Editado_Lote", ["Sim" if idx in batch_flags else "" for idx in range(len(base_df))])
+        base_df.insert(2, "Padronizado_Auto", ["Sim" if idx in auto_flags else "" for idx in range(len(base_df))])
+
+        st.caption("Destaques visuais: amarelo = alteração manual | azul = edição em lote | verde = padronização automática.")
+        st.dataframe(style_change_flags(base_df), use_container_width=True, height=260)
+
+with tabs[2]:
+    render_visual_banner("Resumo por UG", "Acompanhe a consolidação das restrições por unidade gestora e o quadro resumo por restrição.", "📊")
+    st.markdown("### Etapa 3 — Resumo por UG")
+    rows = [RestrictionRow(**r) for r in st.session_state.working_rows] if st.session_state.working_rows else []
+    all_ugs_df = st.session_state.all_ugs_df if isinstance(st.session_state.all_ugs_df, pd.DataFrame) else pd.DataFrame()
+    summary_df = rows_to_summary(rows, all_ugs_df)
+    restr_summary_df = summarize_by_restriction(rows)
+
+    if summary_df.empty:
+        st.info("Não há dados suficientes para montar o resumo por UG.")
+    else:
+        st.markdown("**Restrições contábeis por Unidade Gestora**")
+        st.dataframe(summary_df, use_container_width=True, height=360)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("UGs totais", len(summary_df))
+        c2.metric("UGs com restrição", int((summary_df["Situação"] == "Com restrição").sum()))
+        c3.metric("UGs sem restrição", int((summary_df["Situação"] == "Sem restrição").sum()))
+
+        st.markdown("**Quadro Resumo por Restrição**")
+        st.dataframe(restr_summary_df, use_container_width=True, height=260)
+
+with tabs[3]:
+    render_visual_banner("Exportação", "Baixe o CSV final e os arquivos auxiliares após concluir a conferência da base.", "📤")
+    st.markdown("### Etapa 4 — Exportação")
+    rows = [RestrictionRow(**r) for r in st.session_state.working_rows] if st.session_state.working_rows else []
+    metadata = ReportMetadata(**st.session_state.report_metadata)
+    defaults = st.session_state.header_defaults.copy()
+    all_ugs_df = st.session_state.all_ugs_df if isinstance(st.session_state.all_ugs_df, pd.DataFrame) else pd.DataFrame()
+
+    if not rows:
+        st.info("Importe uma base na guia Importação.")
+    else:
+        nivel = defaults.get("nivel", "1")
+        codigo_sanitizado = sanitize_digits(defaults.get("codigo_responsavel", ""), None)
+        mes_raw = defaults.get("mes", "")
+        mes = int(mes_raw) if str(mes_raw).strip() != "" else 3
+        ano = str(defaults.get("ano", "2026"))
+        nome_arquivo = build_standard_filename(mes, ano)
+        setorial_para_validacao = sanitize_digits(defaults.get("setorial_contabil", "") or metadata.setorial_contabil, 6)
+
+        header_issues = validate_header(nivel, codigo_sanitizado, mes, setorial_contabil=setorial_para_validacao)
+        valid_ugs = set()
+        official_ug_df = st.session_state.get("official_ug_df", pd.DataFrame(columns=["UG", "Nome da UG"]))
+        try:
+            if official_ug_df is not None and not official_ug_df.empty:
+                valid_ugs = set(official_ug_df["UG"].astype(str).str.zfill(6).tolist())
+        except Exception:
+            valid_ugs = set()
+
+        row_errors, row_warnings = validate_rows(
+            rows,
+            bloquear_duplicidades=bloquear_duplicidades,
+            valid_ugs=valid_ugs if official_ug_df is not None else None,
+        )
+        if not permitir_alerta_campos_vazios:
+            row_warnings = [w for w in row_warnings if "vazio" not in w.lower()]
+        all_errors = header_issues + row_errors
+
+        header_dict = {
+            "nivel": nivel,
+            "codigo_responsavel": codigo_sanitizado,
+            "mes": str(mes),
+            "ano": str(ano),
+            "setorial_contabil": setorial_para_validacao,
+        }
+        summary_df = rows_to_summary(rows, all_ugs_df)
+        validation_txt = generate_validation_report(header_dict, rows, all_errors, row_warnings, metadata)
+        csv_content = build_csv_content(nivel, codigo_sanitizado, mes, rows)
+        dados_tratados_df = rows_to_dataframe(rows)
+        logs_df = pd.DataFrame({"Log": metadata.logs or ["Sem logs."]})
+
+        st.write(f"Nome sugerido do arquivo: **{nome_arquivo}**")
+
+        if all_errors:
+            st.error("Foram identificados erros impeditivos para geração do CSV.")
+            for err in all_errors:
+                st.write(f"- {err}")
+        else:
+            st.success("Nenhum erro impeditivo encontrado. O arquivo pode ser gerado.")
+
+        if row_warnings:
+            st.warning("Foram identificados alertas de conferência.")
+            for warn in row_warnings[:30]:
+                st.write(f"- {warn}")
+
+        st.subheader("Prévia do CSV gerado")
+        st.code("\n".join(csv_content.splitlines()[:25]), language="text")
+
+        excel_bytes = dataframe_to_xlsx_bytes({
+            "Dados Tratados": dados_tratados_df,
+            "Resumo por UG": summary_df,
+            "Resumo por Restrição": summarize_by_restriction(rows),
+            "Logs e Metadados": logs_df,
+        })
+
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            st.download_button(
+                "⬇️ Baixar CSV pronto para upload",
+                data=csv_content.encode("utf-8"),
+                file_name=nome_arquivo,
+                mime="text/csv",
+                disabled=bool(all_errors),
+            )
+        with d2:
+            st.download_button(
+                "📗 Baixar Excel final",
+                data=excel_bytes,
+                file_name=nome_arquivo.replace(".csv", "_relatorios.xlsx"),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="secondary",
+            )
+        with d3:
+            st.download_button(
+                "📝 Baixar relatório de validação",
+                data=validation_txt.encode("utf-8"),
+                file_name="relatorio_validacao_restricoes.txt",
+                mime="text/plain",
+                type="secondary",
+            )
+
+        with st.expander("Checklist de conferência antes do upload", expanded=False):
+            st.markdown(
+                """
+1. Confirmar o **nível do header**.
+2. Confirmar o **código responsável**.
+3. Validar o **mês de referência**.
+4. Conferir **UG** e **restrição** em todas as linhas.
+5. Revisar **motivo** e **providência** após a padronização.
+6. Observar os destaques visuais das alterações.
+7. Confirmar a quantidade de detalhes no **Trailer**.
+8. Verificar a conversão do **valor monetário**.
+9. Confirmar o nome do arquivo no padrão `##_###_##.csv`.
+10. Conferir a aba **Resumo por UG** antes da exportação final.
+"""
+            )
+
+
+with tabs[4]:
+    render_visual_banner("Consulta CONRESTCON", "Pesquise os códigos de restrição e consulte os títulos padronizados aplicáveis ao campo Motivo.", "📚")
+    st.markdown("### Etapa 5 — CONRESTCON")
+    st.caption("Tabela atualizada de consulta dos códigos de restrição e respectivos títulos padronizados, utilizada no campo Motivo e como modelo para digitação manual.")
+
+    conrest_df = conrestcon_to_dataframe()
+    codigos = ["Todos"] + sorted(conrest_df["Restrição"].astype(str).tolist())
+
+    c1, c2 = st.columns([1.1, 1.4])
+    with c1:
+        conrest_select = st.selectbox("Selecionar código de restrição", options=codigos, index=0)
+    with c2:
+        conrest_query = st.text_input("Filtrar por digitação", placeholder="Digite o código ou parte do título")
+
+    filtered_conrest = filter_conrestcon_dataframe(conrest_df, conrest_query, conrest_select)
+
+    m1, m2 = st.columns(2)
+    m1.metric("Códigos na tabela", len(conrest_df))
+    m2.metric("Resultados do filtro", len(filtered_conrest))
+
+    st.dataframe(filtered_conrest, use_container_width=True, height=420)
