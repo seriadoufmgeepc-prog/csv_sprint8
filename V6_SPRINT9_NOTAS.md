@@ -1,12 +1,12 @@
-# v6.0 - Sprint 9
+# v6.0 - Sprint 9.1
 
 ## Escopo implementado
+- consolidação da Sprint 9 diretamente no `app.py`;
 - reforço do motor de validação para tratar como erro:
   - códigos de restrição inexistentes na CONRESTCON;
   - UGs não homologadas na base oficial de validação;
-- inclusão de aviso quando nenhuma base homologada de UGs estiver disponível;
-- criação de suporte para carga opcional de base oficial de UGs na aba Importação;
-- integração da validação reforçada ao fluxo de exportação modular.
+- suporte para carga opcional de base oficial de UGs na aba Importação;
+- uso da base oficial de UGs na validação da exportação.
 
-## Objetivo
-Atacar diretamente a ressalva identificada no item H-11 da homologação funcional.
+## Observação
+Esta entrega foi consolidada no fluxo principal do app para contornar ambientes que não carregam a estrutura modular completa.
