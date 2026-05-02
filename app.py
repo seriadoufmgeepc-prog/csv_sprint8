@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
-import importlib.util
 
 ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
@@ -32,35 +31,38 @@ except ModuleNotFoundError:
         st.info("v6.0 - Sprint 4: interface em migração para os serviços modulares.")
 
 
-
-def _load_module_from_file(module_name: str, relative_path: str):
-    try:
-        module_path = ROOT_DIR / relative_path
-        if not module_path.exists():
-            return None
-        spec = importlib.util.spec_from_file_location(module_name, module_path)
-        if spec is None or spec.loader is None:
-            return None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    except Exception:
-        return None
-
-
 def _safe_import_ui():
     availability = {}
-    module_map = {
-        "import": ("ui_import_tab_v6", "ui/import_tab.py", "render_import_tab"),
-        "edit": ("ui_edit_tab_v6", "ui/edit_tab.py", "render_edit_tab"),
-        "summary": ("ui_summary_tab_v6", "ui/summary_tab.py", "render_summary_tab"),
-        "export": ("ui_export_tab_v6", "ui/export_tab.py", "render_export_tab"),
-        "conrestcon": ("ui_conrestcon_tab_v6", "ui/conrestcon_tab.py", "render_conrestcon_tab"),
-        "homologation": ("ui_homologation_tab_v6", "ui/homologation_tab.py", "render_homologation_tab"),
-    }
-    for key, (module_name, rel_path, fn_name) in module_map.items():
-        mod = _load_module_from_file(module_name, rel_path)
-        availability[key] = getattr(mod, fn_name, None) if mod else None
+    try:
+        from ui.import_tab import render_import_tab as _render_import_tab_v6
+        availability["import"] = _render_import_tab_v6
+    except Exception:
+        availability["import"] = None
+    try:
+        from ui.edit_tab import render_edit_tab as _render_edit_tab_v6
+        availability["edit"] = _render_edit_tab_v6
+    except Exception:
+        availability["edit"] = None
+    try:
+        from ui.summary_tab import render_summary_tab as _render_summary_tab_v6
+        availability["summary"] = _render_summary_tab_v6
+    except Exception:
+        availability["summary"] = None
+    try:
+        from ui.export_tab import render_export_tab as _render_export_tab_v6
+        availability["export"] = _render_export_tab_v6
+    except Exception:
+        availability["export"] = None
+    try:
+        from ui.conrestcon_tab import render_conrestcon_tab as _render_conrestcon_tab_v6
+        availability["conrestcon"] = _render_conrestcon_tab_v6
+    except Exception:
+        availability["conrestcon"] = None
+    try:
+        from ui.homologation_tab import render_homologation_tab as _render_homologation_tab_v6
+        availability["homologation"] = _render_homologation_tab_v6
+    except Exception:
+        availability["homologation"] = None
     return availability
 
 _ui_v6 = _safe_import_ui()
@@ -72,6 +74,71 @@ render_conrestcon_tab_v6 = _ui_v6.get("conrestcon")
 render_homologation_tab_v6 = _ui_v6.get("homologation")
 
 from pypdf import PdfReader
+
+
+import json
+
+def render_homologation_tab_inline():
+    st.markdown("### Homologação")
+    st.caption("Fallback local da aba Homologação, embutido no app.py para ambientes que não carregam a estrutura modular completa.")
+
+    checklist_default = [
+        {"id": "H-01", "frente": "Importação", "cenario": "Processar PDF do Tesouro Gerencial", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+        {"id": "H-02", "frente": "Importação", "cenario": "Processar CSV SIAFI existente", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+        {"id": "H-03", "frente": "Importação", "cenario": "Processar planilha estruturada", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+        {"id": "H-04", "frente": "Conferência e Edição", "cenario": "Aplicar capitalização", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+        {"id": "H-05", "frente": "Conferência e Edição", "cenario": "Aplicar padronização por restrição", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+        {"id": "H-06", "frente": "Conferência e Edição", "cenario": "Registrar memória de alterações", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+        {"id": "H-07", "frente": "Resumo", "cenario": "Gerar resumo por UG", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+        {"id": "H-08", "frente": "Resumo", "cenario": "Gerar resumo por restrição", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+        {"id": "H-09", "frente": "Exportação", "cenario": "Exportar CSV modular", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+        {"id": "H-10", "frente": "Exportação", "cenario": "Exportar Excel modular", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+        {"id": "H-11", "frente": "Validação", "cenario": "Detectar erros impeditivos", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+        {"id": "H-12", "frente": "Comparação", "cenario": "Comparar modular x legado", "status": "Pendente", "resultado": "", "divergencia": "", "classificacao": ""},
+    ]
+
+    if "homologation_items_inline" not in st.session_state:
+        st.session_state["homologation_items_inline"] = checklist_default
+
+    items = st.session_state["homologation_items_inline"]
+    st.markdown("#### Registro de execução da homologação")
+    st.dataframe(pd.DataFrame(items), use_container_width=True, height=320)
+
+    ids = [item["id"] for item in items]
+    selected = st.selectbox("Selecionar item para registrar", options=ids, key="inline_homo_item")
+    item = next((x for x in items if x["id"] == selected), None)
+    if item:
+        c1, c2 = st.columns(2)
+        with c1:
+            status = st.selectbox("Status", options=["Pendente", "Em teste", "Concluído"], index=["Pendente", "Em teste", "Concluído"].index(item.get("status", "Pendente")), key="inline_homo_status")
+            classificacao = st.selectbox(
+                "Classificação",
+                options=["", "Aprovado", "Aprovado com ressalva", "Reprovado"],
+                index=["", "Aprovado", "Aprovado com ressalva", "Reprovado"].index(item.get("classificacao", "") if item.get("classificacao", "") in ["", "Aprovado", "Aprovado com ressalva", "Reprovado"] else ""),
+                key="inline_homo_class",
+            )
+        with c2:
+            resultado = st.text_area("Resultado", value=item.get("resultado", ""), key="inline_homo_resultado", height=100)
+            divergencia = st.text_area("Divergência / observação", value=item.get("divergencia", ""), key="inline_homo_div", height=100)
+
+        if st.button("Salvar registro do item", use_container_width=True, key="inline_homo_save"):
+            item["status"] = status
+            item["classificacao"] = classificacao
+            item["resultado"] = resultado
+            item["divergencia"] = divergencia
+            st.success("Registro de homologação atualizado.")
+            st.rerun()
+
+    with st.expander("Checklist orientativo da homologação", expanded=False):
+        st.markdown(
+            "- H-01 a H-03: Importação\n"
+            "- H-04 a H-06: Conferência e Edição\n"
+            "- H-07 a H-08: Resumos\n"
+            "- H-09 a H-10: Exportação\n"
+            "- H-11: Validação\n"
+            "- H-12: Comparação com o legado"
+        )
+
 
 APP_TITLE = "Gerador de CSV para Upload de Restrições Contábeis no SIAFI"
 APP_SUBTITLE = ""
@@ -2084,7 +2151,6 @@ render_sprint_banner()
 
 modo_modular_v6 = st.toggle("Usar interface modular da v6.0 (Sprint 8)", value=True)
 
-
 with st.expander("Diagnóstico rápido da interface modular", expanded=False):
     st.write({
         "root_dir": str(ROOT_DIR),
@@ -2099,7 +2165,9 @@ with st.expander("Diagnóstico rápido da interface modular", expanded=False):
         "summary": render_summary_tab_v6 is not None,
         "export": render_export_tab_v6 is not None,
         "conrestcon": render_conrestcon_tab_v6 is not None,
-        "homologation": render_homologation_tab_v6 is not None,
+        "homologation_module": render_homologation_tab_v6 is not None,
+        "homologation_inline_fallback": "render_homologation_tab_inline" in globals(),
+        "homologation_effective": (render_homologation_tab_v6 is not None) or ("render_homologation_tab_inline" in globals()),
     })
 
 
@@ -2115,18 +2183,20 @@ if modo_modular_v6:
         modular_tabs.append(("📤 Exportação", render_export_tab_v6))
     if render_conrestcon_tab_v6:
         modular_tabs.append(("📚 CONRESTCON", render_conrestcon_tab_v6))
-    if render_homologation_tab_v6:
-        modular_tabs.append(("✅ Homologação", render_homologation_tab_v6))
+
+    homologation_effective_fn = render_homologation_tab_v6 if render_homologation_tab_v6 else render_homologation_tab_inline
 
     if modular_tabs:
-        if len(modular_tabs) < 6:
-            st.warning("Nem todos os módulos da interface v6.0 foram carregados. As abas disponíveis foram exibidas.")
+        st.warning("Modo modular carregado parcialmente. As abas disponíveis foram exibidas.")
         tabs = st.tabs([name for name, _fn in modular_tabs])
         for tab, (_name, fn) in zip(tabs, modular_tabs):
             with tab:
                 fn()
-        st.stop()
 
+    st.markdown("---")
+    st.markdown("## ✅ Homologação")
+    homologation_effective_fn()
+    st.stop()
 tabs = st.tabs(["📥 Importação", "🛠️ Conferência e Edição", "📊 Resumo por UG", "📤 Exportação", "📚 CONRESTCON"])
 
 

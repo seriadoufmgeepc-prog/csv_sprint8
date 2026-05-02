@@ -325,5 +325,18 @@ streamlit run app.py
 - inclusão de diagnóstico rápido da interface modular.
 
 
-## Ajuste da v6.0 Sprint 8.3
-- carregamento dos módulos da interface modular por caminho de arquivo (`importlib.util.spec_from_file_location`), evitando dependência do import tradicional por pacote no ambiente do Streamlit.
+## Ajuste da v6.0 Sprint 8.4
+- criação de fallback local da aba Homologação diretamente no `app.py`, independente da pasta `ui/`.
+
+
+## Ajuste da v6.0 Sprint 8.5
+- aba Homologação sempre adicionada no modo modular;
+- diagnóstico separado entre módulo externo, fallback inline e disponibilidade efetiva.
+
+
+## Ajuste da v6.0 Sprint 8.6
+- exibição forçada da Homologação no modo modular, abaixo das abas disponíveis, sem depender da aba dinâmica.
+
+
+## v6.0 - Sprint 9
+- correção focada no motor de validação para restrições inválidas e UGs não homologadas.
